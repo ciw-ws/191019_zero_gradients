@@ -1,5 +1,5 @@
 import argparse
-import os
+import os, sys
 import random
 import shutil
 import time
@@ -234,6 +234,18 @@ def main_worker(gpu, ngpus_per_node, args):
         validate(val_loader, model, criterion, args)
         return
 
+    # debug, save initial pth
+    filename_init = 'initial.pth.tar'
+    state_init = {
+                'epoch': 0,
+                'arch': args.arch,
+                'state_dict': model.state_dict(),
+                'best_prec1': 0,
+                'optimizer' : optimizer.state_dict(),
+                }
+    torch.save(state_init, filename_init)
+
+
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
@@ -283,9 +295,14 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
             images = images.cuda(args.gpu, non_blocking=True)
         target = target.cuda(args.gpu, non_blocking=True)
 
-        # compute output
         output = model(images)
         loss = criterion(output, target)
+        loss.backward()
+
+        # modify gradients
+        # model.conv1.weight.grad *= 0
+        # model.conv1.weight.grad.fill_(0)
+        model.conv1.weight.grad.data.zero_()
 
         # measure accuracy and record loss
         acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -294,9 +311,41 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         top5.update(acc5[0], images.size(0))
 
         # compute gradient and do SGD step
-        optimizer.zero_grad()
-        loss.backward()
         optimizer.step()
+        optimizer.zero_grad()
+
+        # debug, save pth
+        filename_debug = 'debug.pth.tar'
+        state_debug = {
+                    'arch': args.arch,
+                    'state_dict': model.state_dict(),
+                    'optimizer' : optimizer.state_dict(),
+                    }
+        torch.save(state_debug, filename_debug)
+
+        pth1 = 'initial.pth.tar'
+        pth2 = 'debug.pth.tar'
+
+        checkpoint1 = torch.load(pth1)
+        model1 = models.__dict__['resnet34'](pretrained=False)
+        model1.load_state_dict(checkpoint1['state_dict'])
+        model1 = model1.cuda()
+
+        checkpoint2 = torch.load(pth2)
+        model2 = models.__dict__['resnet34'](pretrained=False)
+        model2.load_state_dict(checkpoint2['state_dict'])
+        model2 = model2.cuda()
+
+        w1 = model1.conv1.weight.data
+        w2 = model2.conv1.weight.data
+        error = torch.sum(torch.abs(w1 - w2))
+
+        if error == 0:
+            print('\nno error!!')
+        else:
+            print('\nerror = {}'.format(error))
+            sys.exit()
+
 
         # measure elapsed time
         batch_time.update(time.time() - end)
